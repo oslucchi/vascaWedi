@@ -1,8 +1,32 @@
+/*
+ * TODO.
+ * Check the timers for safety open/close of the valve on the overflow.
+ * Approximatively we cover 1.6 liters every millimeter of height.Le't assume 16 liters make 1cm of water.
+ * We should so consider a meaningful raising a value in the neighbor of 15mm raise, hence 26 liters entered in the bathtub
+ * Assuming a loading flow of x l/s we can calculate the stabilization time in:
+ * 	26 / loadFlow
+ * as an example, if the load flow is 11 l/min (e.g. 0,183 l/s) we should reach the 15mm raise in roughly 140s
+ *
+ * during tests we might use a pipe having a 90mm diameter and a loadflow of 12 l/m (e.g. 0,2 l/m).
+ * The pipe surface is roughly 25000mmq, each millimeter represents roughly 25ml of water. We get to the 1.5mm raise in roughly 10s
+ *
+ * To be noticed that we should always increase the stabilization time when we empty to allow a longer time between the 2 events
+ * we multiply it by a 1.5 factor (e.g. 15mm in raise 22.5mm decrease)
+ */
+
+
 #include "vascaWedi.h"
-#define TMR_VALVE_OPEN	15000
-#define TMR_VALVE_CLOSE	10000
+#define TMR_VALVE_OPEN				15000
+#define TMR_VALVE_CLOSE				10000
+//#define TMR_STABILIZE_ALERT			40000	// use for real situation
+//#define TMR_STABILIZE_OVERFLOW		140000	// use for real situation
+#define TMR_STABILIZE_ALERT			3500		// use for test with pipe 90mm diam
+#define TMR_STABILIZE_OVERFLOW		10000		// use for test with pipe 90mm diam
+
+#define TMR_STAB_DECREASE_FACTOR	1.5
+
 #define	TEST_RUNS	false
-#define SENSOR_CLOSE true // false for test, set to true in production
+#define SENSOR_CLOSE false // false for test, set to true in production
 
 typedef struct {
 	int pin;
@@ -17,8 +41,8 @@ inPin waterHigh;
 inPin waterOverflow;
 
 // Output
-const int pinSensorWaterHigh = 5;
-const int pinSensorWaterOverflow = 6;
+const int pinLedSensorHigh = 5;
+const int pinLedSensorOverflow = 6;
 const int pinLedValve = 7;
 const int pinDrainRele = 9;
 
@@ -33,9 +57,11 @@ int ledWaterAlert = 0;
 int ledWaterOverflow = 0;
 int ledValveClose = 0;
 int ledStatus = LOW;
+
 long ledStatusBlinkTime;
 long drainReopenTimer = 0;
-long timerStablize = 0;
+long timerStablizeAlert = 0;
+long timerStablizeOverflow = 0;
 long timerValveMove = 0;
 
 
@@ -72,8 +98,8 @@ void setup() {
 	// initialize the output pins
 	pinMode(pinDrainRele, OUTPUT);
 	pinMode(pinLedValve, OUTPUT);
-	pinMode(pinSensorWaterHigh, OUTPUT);
-	pinMode(pinSensorWaterOverflow, OUTPUT);
+	pinMode(pinLedSensorHigh, OUTPUT);
+	pinMode(pinLedSensorOverflow, OUTPUT);
 	pinMode(LED_BUILTIN, OUTPUT);
 	digitalWrite(LED_BUILTIN, ledStatus);
 
@@ -85,9 +111,18 @@ void setup() {
 	start = ledStatusBlinkTime = millis();
 }
 
-void loop()
+int digitalReadOutputPin(uint8_t pin)
 {
-	now = millis();
+ uint8_t bit = digitalPinToBitMask(pin);
+ uint8_t port = digitalPinToPort(pin);
+ if (port == NOT_A_PIN)
+   return LOW;
+
+ return (*portOutputRegister(port) & bit) ? HIGH : LOW;
+}
+
+void blink()
+{
 	if (now - ledStatusBlinkTime > 1000)
 	{
 		if (ledStatus == HIGH)
@@ -97,99 +132,78 @@ void loop()
 		ledStatusBlinkTime = now;
 	}
 
-	// read the state of the input pin and set front:
+}
 
+
+void loop()
+{
+	now = millis();
+
+	// read the state of the input pin and set front:
 	readInput(&button);
 	readInput(&waterHigh);
 	readInput(&waterOverflow);
 
-	if (button.currentVal == HIGH)
+	// The request to open/close the valve follows the status of the switch
+
+	drainReleState = button.currentVal;
+	if (button.front)
 	{
-		drainReleState = HIGH;
+		Serial.println("Switch changed status");
+		timerValveMove = now;
+	}
+	else if ((timerValveMove != 0) && (now - timerValveMove> TMR_VALVE_CLOSE))
+	{
+		ledValveClose = button.currentVal ;
+		timerValveMove = 0;
+	}
 
-		// Valve required to close. Check the status or the overflow sensors
+	// Check the WaterAlert sensor and set led accordingly
+	ledWaterAlert = digitalReadOutputPin(pinLedSensorHigh);
+	if (waterHigh.front)
+	{
+		Serial.println("Water sensor changed status");
+		timerStablizeAlert = now;
+	}
+	else if ((timerStablizeAlert != 0) && (now - timerStablizeAlert > TMR_STABILIZE_ALERT))
+	{
+		timerStablizeAlert = 0;
 		if (waterHigh.currentVal == SENSOR_CLOSE)
-		{
-			if (waterHigh.front)
-			{
-				Serial.println("First water sensor ON");
-			}
-			// the water reached the first sensor. Report it via led. Do not change the drainValve status, still openend
 			ledWaterAlert = HIGH;
-		}
 		else
-		{
-			if (waterHigh.front)
-			{
-				Serial.println("First water sensor OFF");
-				ledWaterAlert = LOW; // the led goes off
-			}
-		}
+			ledWaterAlert = LOW; // the led goes off
+	}
 
+	int stabileOVerflowTime = (waterOverflow.currentVal == SENSOR_CLOSE ?
+									TMR_STABILIZE_OVERFLOW :
+									TMR_STABILIZE_OVERFLOW * TMR_STAB_DECREASE_FACTOR);
+
+	ledWaterOverflow = digitalReadOutputPin(pinLedSensorOverflow);
+	if (waterOverflow.front)
+	{
+		Serial.println("Overflow sensor changed status");
+		timerStablizeOverflow = now;
+	}
+	else if ((timerStablizeOverflow  != 0) &&
+			 (now - timerStablizeOverflow > stabileOVerflowTime))
+	{
+		timerStablizeOverflow = 0;
 		if (waterOverflow.currentVal == SENSOR_CLOSE)
 		{
-			// The overflow level is reached. Wait for the stabilization time to open the valve
-			if (waterOverflow.front)
-			{
-				timerStablize = now;
-			}
-			else if (now - timerStablize > 3000)
-			{
-				// the level has been high for the stabilization time, open the valve
-				if (drainReleState == HIGH)
-				{
-					ledWaterOverflow = HIGH;
-					drainReleState = LOW;
-					drainReopenTimer = 0;
-					Serial.println("Second water sensor ON. Opening the valve ");
-				}
-			}
+			// Same logic as the High level, forcing the valve opening too
+			drainReleState = LOW;
+			ledWaterOverflow = HIGH;
 		}
 		else
 		{
-			timerStablize = 0;
-			if (waterOverflow.front)
-			{
-				drainReopenTimer = now;
-				Serial.print("Second water sensor OFF ");
-			}
-			if ((drainReopenTimer != 0) && (now - drainReopenTimer > 10000))
-			{
-				Serial.print("Timer expired, closing the valve ");
-				drainReleState = HIGH;
-				drainReopenTimer = 0;
-			}
-		}
-
-		if (button.front)
-		{
-			Serial.println("Switch ON, closing the valve");
-			timerValveMove = now;
-		}
-		if ((timerValveMove != 0) && (now - timerValveMove> TMR_VALVE_CLOSE))
-		{
-			ledValveClose = HIGH;
-			timerValveMove = 0;
-		}
-	}
-	else
-	{
-		if (button.front)
-		{
-			Serial.println("Switch OFF, opening the valve");
-			timerValveMove = now;
-		}
-		drainReleState = LOW;
-		if (now - timerValveMove > TMR_VALVE_OPEN)
-		{
-			ledValveClose = LOW;
+			ledWaterOverflow = LOW;
 		}
 	}
 
 	// check if the pushbutton is pressed. If it is, the buttonState is HIGH:
 	digitalWrite(pinDrainRele, drainReleState);
-	digitalWrite(pinSensorWaterHigh, ledWaterAlert);
-	digitalWrite(pinSensorWaterOverflow, ledWaterOverflow);
+	digitalWrite(pinLedSensorHigh, ledWaterAlert);
+	digitalWrite(pinLedSensorOverflow, ledWaterOverflow);
 	digitalWrite(pinLedValve, ledValveClose);
 	digitalWrite(LED_BUILTIN, ledStatus);
 	if (TEST_RUNS)
