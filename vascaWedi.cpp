@@ -14,19 +14,13 @@ typedef struct {
 // Input
 inPin button;
 inPin waterHigh;
-inPin waterHighHigh;
-
-boolean buttonPinFront = false;
-const int waterSensHigh = 10;
-boolean waterSensHighFront = false;
-const int waterSensHighHigh = 12;
-boolean waterSensHighHighFront = false;
+inPin waterOverflow;
 
 // Output
-const int led1Pin = 5;
-const int led2Pin = 6;
-const int led3Pin = 7;
-const int drainRelePin = 9;
+const int pinSensorWaterHigh = 5;
+const int pinSensorWaterOverflow = 6;
+const int pinLedValve = 7;
+const int pinDrainRele = 9;
 
 // variables will change:
 int inputStatePrevious;
@@ -36,7 +30,7 @@ boolean waterSensAlert = 0;         // variable for reading the water High
 boolean waterSensAlarm = 0;         // variable for reading the water high-high
 int drainReleState = 0;
 int ledWaterAlert = 0;
-int ledWaterAlarm = 0;
+int ledWaterOverflow = 0;
 int ledValveClose = 0;
 int ledStatus = LOW;
 long ledStatusBlinkTime;
@@ -71,22 +65,22 @@ void setup() {
 	waterHigh.pin = 10;
 	waterHigh.front = false;
 	waterHigh.previousVal = LOW;
-	waterHighHigh.pin = 12;
+	waterOverflow.pin = 12;
 	waterHigh.front = false;
-	waterHighHigh.previousVal = LOW;
+	waterOverflow.previousVal = LOW;
 
 	// initialize the output pins
-	pinMode(drainRelePin, OUTPUT);
-	pinMode(led1Pin, OUTPUT);
-	pinMode(led2Pin, OUTPUT);
-	pinMode(led3Pin, OUTPUT);
+	pinMode(pinDrainRele, OUTPUT);
+	pinMode(pinLedValve, OUTPUT);
+	pinMode(pinSensorWaterHigh, OUTPUT);
+	pinMode(pinSensorWaterOverflow, OUTPUT);
 	pinMode(LED_BUILTIN, OUTPUT);
 	digitalWrite(LED_BUILTIN, ledStatus);
 
 	// initialize the input pins:
 	pinMode(button.pin, INPUT);
 	pinMode(waterHigh.pin, INPUT);
-	pinMode(waterHighHigh.pin, INPUT);
+	pinMode(waterOverflow.pin, INPUT);
 
 	start = ledStatusBlinkTime = millis();
 }
@@ -107,7 +101,7 @@ void loop()
 
 	readInput(&button);
 	readInput(&waterHigh);
-	readInput(&waterHighHigh);
+	readInput(&waterOverflow);
 
 	if (button.currentVal == HIGH)
 	{
@@ -128,14 +122,14 @@ void loop()
 			if (waterHigh.front)
 			{
 				Serial.println("First water sensor OFF");
-				ledWaterAlert = HIGH; // the led goes off
+				ledWaterAlert = LOW; // the led goes off
 			}
 		}
 
-		if (waterHighHigh.currentVal == SENSOR_CLOSE)
+		if (waterOverflow.currentVal == SENSOR_CLOSE)
 		{
 			// The overflow level is reached. Wait for the stabilization time to open the valve
-			if (waterHighHigh.front)
+			if (waterOverflow.front)
 			{
 				timerStablize = now;
 			}
@@ -144,7 +138,7 @@ void loop()
 				// the level has been high for the stabilization time, open the valve
 				if (drainReleState == HIGH)
 				{
-					ledWaterAlarm = HIGH;
+					ledWaterOverflow = HIGH;
 					drainReleState = LOW;
 					drainReopenTimer = 0;
 					Serial.println("Second water sensor ON. Opening the valve ");
@@ -154,7 +148,7 @@ void loop()
 		else
 		{
 			timerStablize = 0;
-			if (waterHighHigh.front)
+			if (waterOverflow.front)
 			{
 				drainReopenTimer = now;
 				Serial.print("Second water sensor OFF ");
@@ -193,10 +187,10 @@ void loop()
 	}
 
 	// check if the pushbutton is pressed. If it is, the buttonState is HIGH:
-	digitalWrite(drainRelePin, drainReleState);
-	digitalWrite(led1Pin, ledWaterAlert);
-	digitalWrite(led2Pin, ledWaterAlarm);
-	digitalWrite(led3Pin, ledValveClose);
+	digitalWrite(pinDrainRele, drainReleState);
+	digitalWrite(pinSensorWaterHigh, ledWaterAlert);
+	digitalWrite(pinSensorWaterOverflow, ledWaterOverflow);
+	digitalWrite(pinLedValve, ledValveClose);
 	digitalWrite(LED_BUILTIN, ledStatus);
 	if (TEST_RUNS)
 	{
